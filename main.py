@@ -2,13 +2,19 @@ import pandas as pd
 import numpy as np
 import sympy as sp
 from filterpy.kalman import ExtendedKalmanFilter
+from src.common.ekf_model import fx_numpy, Jx_numpy
 
 class IMU(ExtendedKalmanFilter):
     def __init__(self, filename):
         ExtendedKalmanFilter.__init__(self, dim_x=16, dim_z=6, dim_u=6)
         self.data = pd.read_csv(filename)
 
+        # build (or import) the symbolic-derived numeric functions
         self.define()
+
+        # numeric lambdified functions (from the notebook / ekf_model)
+        self.fx_func = fx_numpy
+        self.Jx_func = Jx_numpy
 
         cols = ['px', 'py', 'pz', 'vx', 'vy', 'vz', 'qw', 'qx', 'qy', 'qz', 'bwx', 'bwy', 'bwz', 'bax', 'bay', 'baz']
 
@@ -22,7 +28,12 @@ class IMU(ExtendedKalmanFilter):
 
         self.idx = 0
 
-        self.g = 9.81
+        # gravity as vector
+        self.g = np.array([0., 0., -9.81])
+
+        # default covariance and process noise (can be overridden)
+        self.P = np.eye(16) * 0.1
+        self.Q = np.eye(16) * 1e-3
 
     def quat_multiply_s(self, dq, q):
         qw1, qx1, qy1, qz1 = dq
@@ -121,20 +132,41 @@ class IMU(ExtendedKalmanFilter):
         self.predict((am, wm))
 
     def predict(self, u):
-        if self.idx not in self.states.index:
-            self.states.loc[self.idx] = self.states.loc[self.idx - 1]
+        # Ensure numeric state vector exists (filterpy uses self.x)
+        if not hasattr(self, 'x') or self.x is None:
+            # try to initialize from stored DataFrame state if present
+            if 0 in self.states.index:
+                self.x = self.states.iloc[0].values.astype(float)
+            else:
+                self.x = np.zeros(16, dtype=float)
+                self.x[6] = 1.0
 
-        x = self.states.iloc[self.idx-1]
+        # compute dt in seconds from nanosecond timestamps
+        dt = (self.data.iloc[self.idx]['timestamp(ns)'] -
+              self.data.iloc[self.idx - 1]['timestamp(ns)']) / 1e9
 
+        am, wm = u
+        u_vec = np.concatenate([np.asarray(am).ravel(), np.asarray(wm).ravel()])
 
+        # predict state and linearization using lambdified functions
+        x_pred = self.fx_func(self.x, u_vec, dt)
+        F = self.Jx_func(self.x, u_vec, dt)
 
-        self.states.iloc[self.idx] = self.f(x, u)
+        # normalize quaternion part
+        q = x_pred[6:10]
+        q = q / np.linalg.norm(q)
+        x_pred[6:10] = q
 
-        subs = np.concatenate((self.states.iloc[self.idx],u))
+        # commit prediction
+        self.x = x_pred
+        # log predicted state
+        self.states.loc[self.idx] = x_pred
+        print("F:", F.shape)
+        print("P:", self.P.shape)
+        print("Q:", self.Q.shape)
 
-        F = np.array(self.F_j.evalf(subs=subs)).astype(float)
-
-        self.P = F @ self.P @ F.T
+        # covariance update (discrete-time)
+        self.P = F @ self.P @ F.T + self.Q * dt
 
     def quat_multiply(self, dq, q):
         qw1, qx1, qy1, qz1 = dq
@@ -228,12 +260,13 @@ class Thrust:
     def calculate_state(self, q):
         qw, qx, qy, qz = q
         self.idx += 1
+        print(self.data.columns)
 
         time = self.data['timestamp'][self.idx]
-        c0 = self.data['control0'][self.idx]
-        c1 = self.data['control1'][self.idx]
-        c2 = self.data['control2'][self.idx]
-        c3 = self.data['control3'][self.idx]
+        c0 = self.data['control[0]'][self.idx]
+        c1 = self.data['control[1]'][self.idx]
+        c2 = self.data['control[2]'][self.idx]
+        c3 = self.data['control[3]'][self.idx]
 
         omega_max = self.RPM_max * (2 * np.pi / 60)
 
@@ -255,18 +288,18 @@ class Thrust:
 
         R = self.quat_to_mat(qw, qx, qy, qz)
 
-        F = R @ np.array([0.,0.,T])
+        F = R @ T
 
         A = F / self.m
 
         dt = self.data['timestamp'][self.idx] - self.data['timestamp'][self.idx - 1]
 
-        self.data[['a_x', 'a_y', 'a_z'][self.idx]] = A
-        self.data[['v_x', 'v_y', 'v_z'][self.idx]] = (self.data[['v_x', 'v_y', 'v_z'][self.idx -1]] +
-                                                      self.data[['a_x', 'a_y', 'a_z'][self.idx - 1]] * dt)
-        self.data[['p_x', 'p_y', 'p_z'][self.idx]] = (self.data[['p_x', 'p_y', 'p_z'][self.idx - 1]] +
-                                                      self.data[['v_x', 'v_y', 'v_z'][self.idx - 1]] * dt +
-                                                      self.data[['a_x', 'a_y', 'a_z'][self.idx - 1]] * dt ** 2)
+        self.data.loc[self.idx, ['a_x', 'a_y', 'a_z']] = A
+        self.data.loc[self.idx, ['v_x', 'v_y', 'v_z']] = (self.data.loc[self.idx-1, ['v_x', 'v_y', 'v_z']].values +
+                                                          self.data.loc[self.idx-1, ['a_x', 'a_y', 'a_z']].values * dt)
+        self.data.loc[self.idx, ['p_x', 'p_y', 'p_z']] = (self.data.loc[self.idx-1, ['p_x', 'p_y', 'p_z']].values +
+                                                          self.data.loc[self.idx-1, ['v_x', 'v_y', 'v_z']].values * dt +
+                                                          self.data.loc[self.idx-1, ['a_x', 'a_y', 'a_z']].values * dt ** 2)
 
     def get_state(self):
         return np.array( self.data[['p_x', 'p_y', 'p_z', 'v_x', 'v_y', 'v_z'][self.idx]])
@@ -286,8 +319,10 @@ def main():
     thrust = Thrust('data/UAV/log0001/px4/09_00_22_actuator_motors_0.csv')
 
     imu.x = np.array([0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0])
-    imu.P = np.diag([.1, .1, .1])
-    imu.R = np.diag([.1, .1, .1])
+    #imu.P = np.diag([.1, .1, .1])
+    #imu.R = np.diag([.1, .1, .1])
+    imu.P = np.eye(16) * 0.1   # keep consistent with 16x16 state dimension
+    imu.R = np.eye(6) * 0.1    # measurement covariance (6x6, matches dim_z)
 
     while True:
         imu.input()
@@ -297,8 +332,8 @@ def main():
 
         H = np.zeros((6, 16))
         np.fill_diagonal(H, 1)
-
-        imu.update(z, HJacobian=H, Hx=Hx)
+        imu.update(z, HJacobian=lambda x: H, Hx=Hx)
+#        imu.update(z, HJacobian=H, Hx=Hx)
 
 
 if __name__=="__main__":
