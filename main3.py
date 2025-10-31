@@ -5,8 +5,18 @@ from filterpy.kalman import ExtendedKalmanFilter
 import matplotlib
 matplotlib.use('TkAgg')  # or 'Qt5Agg' if you have Qt installed
 import matplotlib.pyplot as plt
+import os
+import sys
+import math
+#import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+import numpy as np
 
+# Add src directory to path (if needed)
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+from src.dataset.uav import PX4_GPSDataReader
+from src.common.datatypes import SensorType
 
 class IMU(ExtendedKalmanFilter):
     def __init__(self, filename):
@@ -145,10 +155,9 @@ class IMU(ExtendedKalmanFilter):
         return sp.Matrix([w, *xyz])  # return quaternion representing the rotation
 
     def input(self):
-        if self.idx > self.length:
-            return False
-
         self.idx += 1
+        if self.idx >= self.length:
+            return False
 
         row = self.data.iloc[self.idx]
         am = np.array([row['AX(m/s2)'], row['AY(m/s2)'], row['AZ(m/s2)']])
@@ -181,20 +190,23 @@ class IMU(ExtendedKalmanFilter):
         am, wm = u
         q = x_prev[6:10]  # [qw,qx,qy,qz] as you use
         R = self.mat_from_quat(q)  # numeric 3x3
+        
         acc_body = am  # measured specific force (what you read from IMU)
-        acc_world = R @ (acc_body - x_prev[13:16]) - self.g  # what you use
+        #acc_world = R @ (acc_body - x_prev[13:16]) - self.g  # what you use
+        acc_world = R @ (acc_body) - self.g  # what you use
 
-        print("idx", self.idx, "dt(s)", self.dt)
-        print("am (body)", np.round(am, 3))
-        print("gyro (rad/s)", np.round(wm, 4))
-        print("quat (qw,qx,qy,qz)", np.round(q, 5))
-        print("R@am", np.round(R @ am, 3))
-        print("acc_world = R@(am-bias)+g", np.round(acc_world, 3))
-        print("pos prev[:3]", np.round(x_prev[:3], 3))
+        #print("idx", self.idx, "dt(s)", self.dt)
+        #print("am (body)", np.round(am, 3))
+        #print("gyro (rad/s)", np.round(wm, 4))
+        #print("quat (qw,qx,qy,qz)", np.round(q, 5))
+        #print("R@am", np.round(R @ am, 3))
+        #print("acc_world = R@(am-bias)+g", np.round(acc_world, 3))
+        #print("pos prev[:3]", np.round(x_prev[:3], 3))
 
         # nonlinear prediction via lambdified function
         x_pred = np.array(self.f_func(x_prev, u_vec, self.dt), dtype=float).flatten()
-
+        if(self.idx%100==1):
+            print("pos pred[:3]", np.round(x_pred[:3], 3))
         q = x_pred[6:10]
         q = q / (np.linalg.norm(q) + 1e-12)
         x_pred[6:10] = q
@@ -205,21 +217,22 @@ class IMU(ExtendedKalmanFilter):
 
         # numeric Jacobian (linearization point is x_prev)
         F = np.array(self.F_func(x_prev, u_vec, self.dt), dtype=float)
-
+        #print("F", F)
         # sanity checks (optional, remove prints after debugging)
         # print("dt", self.dt, "x_prev[:6]", x_prev[:6], "u", u_vec)
         # print("x_pred[:6]", x_pred[:6])
         # print("F shape", F.shape, "P shape", self.P.shape)
 
         Q = np.zeros((16, 16))
-        Q[0:3, 0:3] += np.eye(3) * 1e-4  # position
-        Q[3:6, 3:6] += np.eye(3) * 1e-3  # velocity
-        Q[6:10, 6:10] += np.eye(4) * 1e-6  # quat
+        Q[0:3, 0:3] += np.eye(3) * 1e-1  # position
+        Q[3:6, 3:6] += np.eye(3) * 1e-1  # velocity
+        Q[6:10, 6:10] += np.eye(4) * 1e-2  # quat
         Q[10:16, 10:16] += np.eye(6) * 1e-8  # biases
         self.Q = Q
 
         # propagate covariance
         self.P = F @ self.P @ F.T + self.Q
+        #print("P:", self.P)     
 
     def mat_from_quat(self, q):
         qw, qx, qy, qz = q
@@ -232,71 +245,140 @@ class IMU(ExtendedKalmanFilter):
     def get_quaternion(self):
         return np.array(self.states.iloc[self.idx][['qw','qx','qy','qz']])
 
-    def print_pos(self):
-        print(self.x[[0, 1, 2]])
+    #def print_pos(self):
+        #print(self.x[[0, 1, 2]])
 
-    def plot_3d_trajectory(self):
-        """
-        Plot the raw GPS trajectory in 3D.
-        """
-        raw_positions = np.array(self.states[['px', 'py', 'pz']])
 
+    def plot_3d_trajectory(self, z_measurements=None):
+        """
+        Plot the raw GPS trajectory, filtered trajectory, and z measurements in 3D.
+        
+        Args:
+            z_measurements: Array of z measurement positions from the main loop
+        """
+        # Get filtered positions (EKF data)
+        filtered_positions = np.array(self.states[['px', 'py', 'pz']])
+        #for i in range(len(self.states)):
+        #    if i%100==0:
+        #        print(self.states.iloc[i])
+        # Get raw GPS positions (from the RawGPS3DPlotter logic)
+        raw_gps_positions = []
+        ref_lat = None
+        ref_lon = None
+        ref_alt = None
+        
+        # Initialize GPS data reader
+        gps_file = "data/UAV/log0001/px4/09_00_22_sensor_gps_0.csv"
+        gps_reader = PX4_GPSDataReader(
+            path=gps_file,
+            sensor_type=SensorType.PX4_GPS
+        )
+        
+        # Function to convert GPS to XYZ (same as in RawGPS3DPlotter)
+        def lat_lon_alt_to_xyz(lat, lon, alt, ref_lat, ref_lon, ref_alt):
+            if ref_lat is None:
+                return 0.0, 0.0, 0.0, lat, lon, alt
+            
+            lat_rad = math.radians(lat)
+            ref_lat_rad = math.radians(ref_lat)
+            R = 6371000  # Earth radius in meters
+            
+            x = R * math.cos(ref_lat_rad) * math.radians(lon - ref_lon)
+            y = R * math.radians(lat - ref_lat)
+            z = alt - ref_alt
+            
+            return x, y, z, ref_lat, ref_lon, ref_alt
+        
+        # Read raw GPS data
+        for data in gps_reader:
+            lat = data.lat / 1e7
+            lon = data.lon / 1e7
+            alt = data.alt / 1e3
+            
+            # Skip invalid GPS data
+            if lat == 0.0 or lon == 0.0 or abs(lat) < 1e-6 or abs(lon) < 1e-6:
+                continue
+            
+            x, y, z, ref_lat, ref_lon, ref_alt = lat_lon_alt_to_xyz(
+                lat, lon, alt, ref_lat, ref_lon, ref_alt
+            )
+            raw_gps_positions.append([x, y, z])
+        
+        raw_gps_positions = np.array(raw_gps_positions)
+        
         # Create 3D plot
-        fig = plt.figure(figsize=(14, 10))
+        fig = plt.figure(figsize=(16, 10))
         ax = fig.add_subplot(111, projection='3d')
-
-        # Plot raw GPS trajectory
-        ax.plot(raw_positions[:, 0], raw_positions[:, 1], raw_positions[:, 2],
-                'b.-', alpha=0.7, label='Raw GPS Trajectory', markersize=4, linewidth=1.5)
-
+        
+        # Plot raw GPS trajectory (blue)
+        ax.plot(raw_gps_positions[:, 0], raw_gps_positions[:, 1], raw_gps_positions[:, 2],
+                'b.-', alpha=0.3, label='Raw GPS Trajectory', markersize=2, linewidth=1)
+        
+        # Plot filtered/EKF trajectory (red)
+        ax.plot(filtered_positions[:, 0], filtered_positions[:, 1], filtered_positions[:, 2],
+                'r-', alpha=0.8, label='EKF Filtered Trajectory', markersize=3, linewidth=2)
+        
+        # Plot z measurements trajectory (green/cyan)
+        if z_measurements is not None and len(z_measurements) > 0:
+            ax.plot(z_measurements[:, 0], z_measurements[:, 1], z_measurements[:, 2],
+                    'g-', alpha=0.6, label='Thrust Model Measurements', markersize=2, linewidth=1.5)
+        
         # Mark start point (green)
-        ax.scatter(raw_positions[0, 0], raw_positions[0, 1], raw_positions[0, 2],
-                   c='green', s=200, marker='o', label='Start Point', edgecolors='black', linewidths=2)
-
+        ax.scatter(filtered_positions[0, 0], filtered_positions[0, 1], filtered_positions[0, 2],
+                c='green', s=200, marker='o', label='Start Point', edgecolors='black', linewidths=2)
+        
         # Mark end point (red)
-        ax.scatter(raw_positions[-1, 0], raw_positions[-1, 1], raw_positions[-1, 2],
-                   c='red', s=200, marker='s', label='End Point', edgecolors='black', linewidths=2)
-
+        ax.scatter(filtered_positions[-1, 0], filtered_positions[-1, 1], filtered_positions[-1, 2],
+                c='red', s=200, marker='s', label='End Point', edgecolors='black', linewidths=2)
+        
         # Set labels and title
         ax.set_xlabel('X (meters)', fontsize=12, fontweight='bold')
         ax.set_ylabel('Y (meters)', fontsize=12, fontweight='bold')
         ax.set_zlabel('Z (meters)', fontsize=12, fontweight='bold')
-        ax.set_title('Raw GPS Trajectory in 3D (No Filtering)', fontsize=14, fontweight='bold')
-        ax.legend(fontsize=11)
-
-        # Set equal aspect ratio for better visualization
+        ax.set_title('Trajectory Comparison: Raw GPS vs EKF vs Thrust Model', fontsize=14, fontweight='bold')
+        ax.legend(fontsize=10, loc='upper right')
+        
+        # Set equal aspect ratio using combined data
+        all_positions = [raw_gps_positions, filtered_positions]
+        if z_measurements is not None and len(z_measurements) > 0:
+            all_positions.append(z_measurements)
+        all_positions = np.vstack(all_positions)
+        
         max_range = np.array([
-            raw_positions[:, 0].max() - raw_positions[:, 0].min(),
-            raw_positions[:, 1].max() - raw_positions[:, 1].min(),
-            raw_positions[:, 2].max() - raw_positions[:, 2].min()
+            all_positions[:, 0].max() - all_positions[:, 0].min(),
+            all_positions[:, 1].max() - all_positions[:, 1].min(),
+            all_positions[:, 2].max() - all_positions[:, 2].min()
         ]).max() / 2.0
-
-        mid_x = (raw_positions[:, 0].max() + raw_positions[:, 0].min()) * 0.5
-        mid_y = (raw_positions[:, 1].max() + raw_positions[:, 1].min()) * 0.5
-        mid_z = (raw_positions[:, 2].max() + raw_positions[:, 2].min()) * 0.5
-
+        
+        mid_x = (all_positions[:, 0].max() + all_positions[:, 0].min()) * 0.5
+        mid_y = (all_positions[:, 1].max() + all_positions[:, 1].min()) * 0.5
+        mid_z = (all_positions[:, 2].max() + all_positions[:, 2].min()) * 0.5
+        
         ax.set_xlim(mid_x - max_range, mid_x + max_range)
         ax.set_ylim(mid_y - max_range, mid_y + max_range)
         ax.set_zlim(mid_z - max_range, mid_z + max_range)
-
+        
         # Add grid
         ax.grid(True, alpha=0.3)
-
+        
         # Add statistics text box
-        stats_text = f"Total GPS Points: {len(raw_positions)}\n"
-        stats_text += f"Start: ({raw_positions[0, 0]:.2f}, {raw_positions[0, 1]:.2f}, {raw_positions[0, 2]:.2f})\n"
-        stats_text += f"End: ({raw_positions[-1, 0]:.2f}, {raw_positions[-1, 1]:.2f}, {raw_positions[-1, 2]:.2f})"
-
+        stats_text = f"Raw GPS Points: {len(raw_gps_positions)}\n"
+        stats_text += f"EKF Filtered Points: {len(filtered_positions)}\n"
+        if z_measurements is not None and len(z_measurements) > 0:
+            stats_text += f"Thrust Model Points: {len(z_measurements)}\n"
+        stats_text += f"Start: ({filtered_positions[0, 0]:.2f}, {filtered_positions[0, 1]:.2f}, {filtered_positions[0, 2]:.2f})\n"
+        stats_text += f"End: ({filtered_positions[-1, 0]:.2f}, {filtered_positions[-1, 1]:.2f}, {filtered_positions[-1, 2]:.2f})"
+        
         ax.text2D(0.02, 0.98, stats_text, transform=ax.transAxes,
-                  fontsize=10, verticalalignment='top',
-                  bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
-
+                fontsize=10, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        
         plt.tight_layout()
         return fig
 
-    def show(self):
+    def show(self, z_measurements=None):
         """Display the plot."""
-        self.plot_3d_trajectory()
+        self.plot_3d_trajectory(z_measurements)
         plt.show()
 
 class Thrust:
@@ -310,14 +392,14 @@ class Thrust:
         self.idx = 0
 
         self.m = 1.075
-        self.b = 0.000022
+        self.b = 0.22 #0.000022
 
         self.data[['p_x', 'p_y', 'p_z']] = 0.
         self.data[['v_x', 'v_y', 'v_z']] = 0.
         self.data[['a_x', 'a_y', 'a_z']] = 0.
 
-        print(self.data.head)
-        print(self.data.columns)
+        #print(self.data.head)
+        #print(self.data.columns)
 
     def calculate_state(self, q):
         qw, qx, qy, qz = q
@@ -341,17 +423,17 @@ class Thrust:
         w3 = c3 * omega_max
 
         #thrusts
-        t0 = w0 * self.b
-        t1 = w1 * self.b
-        t2 = w2 * self.b
-        t3 = w3 * self.b
+        t0 = w0 #** 2
+        t1 = w1 #** 2 
+        t2 = w2 #** 2 
+        t3 = w3 #** 2
 
         #total thrust
-        t = t0 + t1 + t2 + t3
+        t = self.b *(t0 + t1 + t2 + t3)
         T = np.array([0., 0., t])
 
         R = self.quat_to_mat(qw, qx, qy, qz)
-
+        #print("R", R)
         F = R @ T
 
         A = F / self.m
@@ -366,8 +448,8 @@ class Thrust:
         )
         self.data.loc[self.idx, ['p_x', 'p_y', 'p_z']] = (
                 self.data.loc[self.idx - 1, ['p_x', 'p_y', 'p_z']].values +
-                self.data.loc[self.idx, ['v_x', 'v_y', 'v_z']].values * dt +
-                self.data.loc[self.idx, ['a_x', 'a_y', 'a_z']].values * dt ** 2
+                self.data.loc[self.idx-1, ['v_x', 'v_y', 'v_z']].values * dt +
+                self.data.loc[self.idx-1, ['a_x', 'a_y', 'a_z']].values *0.5 * dt ** 2
         )
 
         return True
@@ -398,26 +480,37 @@ def main():
 
     imu.x = np.array([0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0])
     imu.P = np.zeros((16, 16))
-    np.fill_diagonal(imu.P, 1)
+    np.fill_diagonal(imu.P, 0.1)
     imu.R = np.zeros((6, 6))
-    np.fill_diagonal(imu.R, 1)
+    np.fill_diagonal(imu.R, 100)
 
     i=0
+    # Initialize array to collect z measurements
+    z_measurements = []
 
     while True:
+        #print("step", i)
+        i+=1
         if not imu.input():
             break
+        if i%5==0:
+            if not thrust.calculate_state(imu.get_quaternion()):
+                break
+            z = thrust.get_state()
+            # Collect z measurements (first 3 elements are position x, y, z)
+            z_measurements.append(z[:3])  # Only append x, y, z position
+            # Print the most recently appended z values
+            #print(f"Iteration {i}: z = {z[:3]}")
+        
+            imu.update(z, HJacobian=H_f, Hx=Hx)
 
-        if not thrust.calculate_state(imu.get_quaternion()):
-            break
+        #imu.print_pos()
 
-        z = thrust.get_state()
+    
+    # Convert to numpy array
+    z_measurements = np.array(z_measurements)
 
-        imu.update(z, HJacobian=H_f, Hx=Hx)
-
-        imu.print_pos()
-
-    imu.show()
+    imu.show(z_measurements=z_measurements)
 
 if __name__=="__main__":
     main()
