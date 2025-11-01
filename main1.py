@@ -58,20 +58,20 @@ if __name__ == "__main__":
             actuator_data = next(filter_datareader)
             print(actuator_data)
 
-            data_manager.print_actuator_states()
-
             prev_state = data_manager.get_old_actuator_state()
             q = x[[6, 7, 8, 9]]
 
-            s = actuator_state.calculate_state(actuator_data, q, prev_state)
+            s = actuator_state.calculate_state(actuator_data, q, prev_state, dt)
             data_manager.save_actuator_state(s)
 
             z = s[[0, 1, 2, 3, 4, 5]]
-            print(z)
 
             filter.update_f(z)
 
             data_manager.update_idx()
+
+            if (data_manager.imu_idx % 1000 == 0):
+                data_manager.show()
 
         except StopIteration:
             break

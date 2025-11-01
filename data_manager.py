@@ -75,7 +75,7 @@ class DataManager:
         print(self.imu_states)
 
     def plot_imu_positions(self):
-        print(self.positions)
+        #print(self.positions)
         raw_positions = np.array(self.positions)
 
         # Create 3D plot

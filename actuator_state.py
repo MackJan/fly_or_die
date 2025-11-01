@@ -12,11 +12,15 @@ def quat_to_mat(q):
         [2 * (qx * qz - qw * qy), 2 * (qy * qz + qw * qx), 1 - 2 * (qx ** 2 + qy ** 2)]
     ])
 
-def calculate_state(motor_data, q, prev_state):
-    dt, c0, c1, c2, c3 = motor_data
+def calculate_state(motor_data, q, prev_state, dt):
+    t, c0, c1, c2, c3 = motor_data
     a_old = prev_state[0:3]
     v_old = prev_state[3:6]
     p_old = prev_state[6:9]
+
+    print(motor_data)
+    print(q)
+    print(prev_state)
 
     omega_max = RPM_MAX * (2. * np.pi / 60.)
 
@@ -38,7 +42,9 @@ def calculate_state(motor_data, q, prev_state):
 
     R = quat_to_mat(q.flatten())
 
+    print('R: ')
     print(R)
+    print('T: ')
     print(T)
 
     F = R @ T
