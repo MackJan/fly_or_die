@@ -18,9 +18,9 @@ def calculate_state(motor_data, q, prev_state, dt):
     v_old = prev_state[3:6]
     p_old = prev_state[6:9]
 
-    print(motor_data)
-    print(q)
-    print(prev_state)
+    #print(motor_data)
+    #print(q)
+    #print(prev_state)
 
     omega_max = RPM_MAX * (2. * np.pi / 60.)
 
@@ -42,10 +42,10 @@ def calculate_state(motor_data, q, prev_state, dt):
 
     R = quat_to_mat(q.flatten())
 
-    print('R: ')
-    print(R)
-    print('T: ')
-    print(T)
+    #print('R: ')
+    #print(R)
+    #print('T: ')
+    #print(T)
 
     F = R @ T
 
@@ -55,8 +55,8 @@ def calculate_state(motor_data, q, prev_state, dt):
 
     p_new = p_old + v_old * dt + 1/2 * a_old * dt**2
 
-    print(a_new)
-    print(v_new)
-    print(p_new)
+    #print(a_new)
+    #print(v_new)
+    #print(p_new)
 
     return np.concatenate((p_new, v_new.flatten(), a_new.flatten()))

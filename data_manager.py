@@ -24,7 +24,8 @@ class DataManager:
 
         self.data_length = 0
 
-        self.positions = []
+        self.imu_positions = []
+        self.thrust_positions = []
 
     def end(self):
         return self.imu_idx >= self.data_length
@@ -57,10 +58,11 @@ class DataManager:
 
     def save_imu_state(self, x):
         self.imu_states.append(x)
-        self.positions.append(x[[0,1,2]])
+        self.imu_positions.append(x[[0,1,2]])
 
     def save_actuator_state(self, x):
         self.actuator_states.append(x)
+        self.thrust_positions.append(x[[0,1,2]])
 
     def print_imu_data(self):
         print(self.imu_data)
@@ -76,7 +78,8 @@ class DataManager:
 
     def plot_imu_positions(self):
         #print(self.positions)
-        raw_positions = np.array(self.positions)
+        raw_positions = np.array(self.imu_positions)
+        z_measurements = np.array(self.thrust_positions)
 
         # Create 3D plot
         fig = plt.figure(figsize=(14, 10))
@@ -85,6 +88,11 @@ class DataManager:
         # Plot raw GPS trajectory
         ax.plot(raw_positions[:, 0], raw_positions[:, 1], raw_positions[:, 2],
                 'b.-', alpha=0.7, label='Raw GPS Trajectory', markersize=4, linewidth=1.5)
+
+        # Plot z measurements trajectory (green/cyan)
+        if z_measurements is not None and len(z_measurements) > 0:
+            ax.plot(z_measurements[:, 0], z_measurements[:, 1], z_measurements[:, 2],
+                    'g-', alpha=0.6, label='Thrust Model Measurements', markersize=2, linewidth=1.5)
 
         # Mark start point (green)
         ax.scatter(raw_positions[0, 0], raw_positions[0, 1], raw_positions[0, 2],
@@ -130,6 +138,33 @@ class DataManager:
 
         plt.tight_layout()
         return fig
+
+    def plot_linear_accelerations(self):
+        """Plot individual linear accelerations (x, y, z) over time in 2D."""
+        if not self.imu_data:
+            print("No IMU data to plot.")
+            return
+
+        # Extract timestamps and acceleration components
+        timestamps = [d.timestamp for d in self.imu_data]
+        ax_data = [d.a[0] for d in self.imu_data]
+        ay_data = [d.a[1] for d in self.imu_data]
+        az_data = [d.a[2] for d in self.imu_data]
+
+        # Create 2D plot
+        plt.figure(figsize=(12, 6))
+        plt.plot(timestamps, ax_data, label='Accel X', color='r', linewidth=1.2)
+        plt.plot(timestamps, ay_data, label='Accel Y', color='g', linewidth=1.2)
+        plt.plot(timestamps, az_data, label='Accel Z', color='b', linewidth=1.2)
+
+        # Labels and grid
+        plt.title('Linear Accelerations Over Time', fontsize=14, fontweight='bold')
+        plt.xlabel('Timestamp', fontsize=12)
+        plt.ylabel('Acceleration (m/s²)', fontsize=12)
+        plt.grid(True, alpha=0.3)
+        plt.legend(fontsize=11)
+        plt.tight_layout()
+        plt.show()
 
     def show(self):
         """Display the plot."""

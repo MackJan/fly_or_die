@@ -84,6 +84,8 @@ class DroneExtendedKalmanFilter(EKF):
         bw_t = bw
         ba_t = ba
 
+        self.R = np.diag(6, 0.01)
+
         self.fxu = sp.Matrix.vstack(position_t, velocity_t, quaternion_t, bw_t, ba_t)
         print(self.fxu)
 
@@ -109,15 +111,15 @@ class DroneExtendedKalmanFilter(EKF):
         if self.x_prior[6] == 0:
             self.x_prior[6] = 1
 
-        #x_pred = np.array(self.f_func(self.x_prior, i, dt), dtype=float).flatten()
+        x_pred = np.array(self.f_func(self.x_prior, i, dt), dtype=float).flatten()
 
-        #self.x = x_pred
+        self.x = x_pred
 
-        self.x = matrices.evaluate_f(self.x_prior, u, dt)
+        #self.x = matrices.evaluate_f(self.x_prior, u, dt)
 
-        #F = np.array(self.F_func(self.x, i, dt), dtype=float)
+        F = np.array(self.F_func(self.x, i, dt), dtype=float)
         #F = sc.differentiate.jacobian(self.fxu, [self.x_prior,i,dt])
-        F = matrices.evaluate_F(self.x_prior, u, dt)
+        #F = matrices.evaluate_F(self.x_prior, u, dt)
 
         self.P = F @ self.P @ F.T + self.Q
 
@@ -142,29 +144,32 @@ class DroneExtendedKalmanFilter(EKF):
         return sp.Matrix([w, *xyz])  # return quaternion representing the rotation
 
     def update_f(self, z):
-        H = H_f(self.x)
+        #H = H_f(self.x)
 
-        print(H.shape)
+        #print(H.shape)
         #print("rank(H) =", np.linalg.matrix_rank(H))
         #print("eig(H)  =", np.linalg.eigvalsh(H))
 
-        PHT = np.dot(self.P, H.T)
+        #PHT = np.dot(self.P, H.T)
 
-        print(PHT.shape)
+        #print(PHT.shape)
         #print("rank(PHT) =", np.linalg.matrix_rank(PHT))
         #print("eig(PHT)  =", np.linalg.eigvalsh(PHT))
 
-        self.S = np.dot(H, PHT) + self.R
+        #self.S = np.dot(H, PHT) + self.R
 
-        print(self.S.shape)
+        #print(self.S.shape)
         #print("rank(S) =", np.linalg.matrix_rank(self.S))
         #print("eig(S)  =", np.linalg.eigvalsh(self.S))
 
-        epsilon = 1e-6
-        self.S += np.eye(self.S.shape[0]) + epsilon
+        #epsilon = 1e-6
+        #self.S += np.eye(self.S.shape[0]) + epsilon
 
-        self.K = PHT.dot(linalg.inv(self.S))
+        #self.K = PHT.dot(linalg.inv(self.S))
 
         self.update(z, HJacobian=H_f, Hx=Hx)
+
+    def get_x(self):
+        return self.x
 
 
