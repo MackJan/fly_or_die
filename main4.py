@@ -1,7 +1,8 @@
 import pandas as pd
 import numpy as np
 import sympy as sp
-from filterpy.kalman import ExtendedKalmanFilter
+from filterpy.kalman import KalmanFilter
+from filterpy.common import Q_discrete_white_noise
 import matplotlib
 matplotlib.use('TkAgg')  # or 'Qt5Agg' if you have Qt installed
 import matplotlib.pyplot as plt
@@ -18,9 +19,9 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from src.dataset.uav import PX4_GPSDataReader
 from src.common.datatypes import SensorType
 
-class IMU(ExtendedKalmanFilter):
+class IMU(KalmanFilter):
     def __init__(self, filename):
-        ExtendedKalmanFilter.__init__(self, dim_x=16, dim_z=6, dim_u=6)
+        KalmanFilter.__init__(self, dim_x=16, dim_z=6, dim_u=6)
         self.data = pd.read_csv(filename)
 
         self.length = self.data.shape[0]
@@ -108,10 +109,20 @@ class IMU(ExtendedKalmanFilter):
         ba_t = ba
 
         self.fxu = sp.Matrix.vstack(position_t, velocity_t, quaternion_t, bw_t, ba_t)
+             # initial state (location and velocity)
+        self.x = np.array([0., 0., 0.,  # position
+                           0., 0., 0.,  # velocity
+                           1., 0., 0., 0.,  # quaternion
+                           0., 0., 0.,  # gyro bias
+                           0.01, -0.02, 0.])  # accel bias
+        
+          # Measurement function
+        self.P *= .1                 # covariance matrix
+        self.R = 1                      # state uncertainty
 
         #self.F_j = self.fxu.jacobian(sp.Matrix.vstack(x,u))
         self.F_j = self.fxu.jacobian(x)
-        self.G_j = self.f_xu.jacobian(u) #getting G matrix
+        self.G_j = self.fxu.jacobian(u) #getting G matrix
 
         self.f_func = sp.lambdify((x, u, dt), self.fxu, 'numpy')
 
@@ -120,6 +131,10 @@ class IMU(ExtendedKalmanFilter):
         self.F_j = self.F_j.doit()
         self.F_j = self.F_j.xreplace({d: 0 for d in self.F_j.atoms(sp.Derivative)})
         self.F_func = sp.lambdify((x, u, dt), self.F_j, 'numpy')
+
+        self.G_j = self.G_j.doit()
+        self.G_j = self.G_j.xreplace({d: 0 for d in self.G_j.atoms(sp.Derivative)})
+        self.G_func = sp.lambdify((x, u, dt), self.G_j, 'numpy')
 
         cols = ['px', 'py', 'pz', 'vx', 'vy', 'vz', 'qw', 'qx', 'qy', 'qz', 'bwx', 'bwy', 'bwz', 'bax', 'bay', 'baz']
 
@@ -163,11 +178,11 @@ class IMU(ExtendedKalmanFilter):
         row = self.data.iloc[self.idx]
         am = np.array([row['AX(m/s2)'], row['AY(m/s2)'], row['AZ(m/s2)']])
         wm = np.array([row['GX(rad/s)'], row['GY(rad/s)'], row['GZ(rad/s)']])
-        self.predict((am, wm))
+        self.predict_f((am, wm))
 
         return True
 
-    def predict(self, u):
+    def predict_f(self, u):
         # ensure previous state exists
         if self.idx not in self.states.index:
             self.states.loc[self.idx] = self.states.loc[self.idx - 1]
@@ -184,11 +199,9 @@ class IMU(ExtendedKalmanFilter):
 
         # use previous state for prediction
         x_prev = self.states.iloc[self.idx - 1].values.astype(float)
-        am, wm = u
-        u_vec = np.concatenate([am, wm])
-
         #debugging
         am, wm = u
+        u = np.hstack((am, wm))
         q = x_prev[6:10]  # [qw,qx,qy,qz] as you use
         R = self.mat_from_quat(q)  # numeric 3x3
         
@@ -205,34 +218,15 @@ class IMU(ExtendedKalmanFilter):
         #print("pos prev[:3]", np.round(x_prev[:3], 3))
 
         # nonlinear prediction via lambdified function
-        x_pred = np.array(self.f_func(x_prev, u_vec, self.dt), dtype=float).flatten()
-        if(self.idx%100==1):
-            print("pos pred[:3]", np.round(x_pred[:3], 3))
-        q = x_pred[6:10]
-        q = q / (np.linalg.norm(q) + 1e-12)
-        x_pred[6:10] = q
+        self.F = np.array(self.F_func(x_prev, u, self.dt), dtype=float)
+        
+        self.B = np.array(self.G_func(x_prev, u, self.dt), dtype=float)
 
-        # store predicted state
-        self.x = x_pred
+        print("F:", self.F) 
+
+        self.predict(u=u)
+
         self.states.loc[self.idx] = self.x
-
-        # numeric Jacobian (linearization point is x_prev)
-        F = np.array(self.F_func(x_prev, u_vec, self.dt), dtype=float)
-        #print("F", F)
-        # sanity checks (optional, remove prints after debugging)
-        # print("dt", self.dt, "x_prev[:6]", x_prev[:6], "u", u_vec)
-        # print("x_pred[:6]", x_pred[:6])
-        # print("F shape", F.shape, "P shape", self.P.shape)
-
-        Q = np.zeros((16, 16))
-        Q[0:3, 0:3] += np.eye(3) * 1e-1  # position
-        Q[3:6, 3:6] += np.eye(3) * 1e-1  # velocity
-        Q[6:10, 6:10] += np.eye(4) * 1e-2  # quat
-        Q[10:16, 10:16] += np.eye(6) * 1e-8  # biases
-        self.Q = Q
-
-        # propagate covariance
-        self.P = F @ self.P @ F.T + self.Q
         #print("P:", self.P)     
 
     def mat_from_quat(self, q):
@@ -492,6 +486,7 @@ def main():
     while True:
         #print("step", i)
         i+=1
+        print("Iteration:", i)
         if not imu.input():
             break
         #if i%5==0:
