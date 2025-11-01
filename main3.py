@@ -63,13 +63,13 @@ if __name__ == "__main__":
             prev_state = data_manager.get_old_actuator_state()
             q = x[[6, 7, 8, 9]]
 
-            #s = actuator_state.calculate_state(actuator_data, q, prev_state)
-            #data_manager.save_actuator_state(s)
+            s = actuator_state.calculate_state(actuator_data, q, prev_state)
+            data_manager.save_actuator_state(s)
 
-            #z = s[[0, 1, 2, 3, 4, 5]]
-            #print(z)
+            z = s[[0, 1, 2, 3, 4, 5]]
+            print(z)
 
-            #filter.update_f(z)
+            filter.update_f(z)
 
             data_manager.update_idx()
 

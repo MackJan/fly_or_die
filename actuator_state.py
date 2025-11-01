@@ -36,7 +36,7 @@ def calculate_state(motor_data, q, prev_state):
     t = t0 + t1 + t2 + t3
     T = np.array([[0.], [0.], [t]])
 
-    R = quat_to_mat(q)
+    R = quat_to_mat(q.flatten())
 
     print(R)
     print(T)
@@ -49,4 +49,8 @@ def calculate_state(motor_data, q, prev_state):
 
     p_new = p_old + v_old * dt + 1/2 * a_old * dt**2
 
-    return np.concatenate((p_new, v_new, a_new))
+    print(a_new)
+    print(v_new)
+    print(p_new)
+
+    return np.concatenate((p_new, v_new.flatten(), a_new.flatten()))
